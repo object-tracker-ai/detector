@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced People Detector</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background-color: #f0f2f5;
+            color: #333;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .camera-container {
+            position: relative;
+            width: 100%;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            background: #000;
+            margin-bottom: 20px;
+        }
+        #video {
+            width: 100%;
+            display: block;
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        button {
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.3s;
+            min-width: 160px;
+        }
+        button:hover {
+            background-color: #3367d6;
+        }
+        button:disabled {
+            background-color: #9e9e9e;
+            cursor: not-allowed;
+        }
+        .stats {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            font-size: 18px;
+        }
+        .permission-help {
+            display: none;
+            background: #ffebee;
+            color: #d32f2f;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 768px) {
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+            button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Advanced People Detector</h1>
+        
+        <div class="permission-help" id="permissionHelp">
+            <h3>⚠️ Camera Permission Required</h3>
+            <p>To use this detector, please allow camera access:</p>
+            <ul>
+                <li>Click the camera icon in your browser's address bar</li>
+                <li>Select "Allow" for camera permissions</li>
+                <li>Refresh the page</li>
+            </ul>
+        </div>
+        
+        <div class="camera-container">
+            <video id="video" playsinline autoplay muted></video>
+            <canvas id="canvas"></canvas>
+        </div>
+        
+        <div class="stats">
+            <div class="stat-item">
+                <span>People Detected:</span>
+                <span id="peopleCount">0</span>
+            </div>
+            <div class="stat-item">
+                <span>Detection Confidence:</span>
+                <span id="confidence">0%</span>
+            </div>
+            <div class="stat-item">
+                <span>Processing Speed:</span>
+                <span id="processingSpeed">0 ms</span>
+            </div>
+            <div class="stat-item">
+                <span>Frames Per Second:</span>
+                <span id="fps">0</span>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button id="startBtn">Start Camera</button>
+            <button id="detectBtn" disabled>Start Detection</button>
+            <button id="stopBtn" disabled>Stop Camera</button>
+            <button id="flipBtn">Flip Camera</button>
+        </div>
+        
+        <div class="loading" id="loading">
+            Loading AI model... (This may take a moment on first load)
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2"></script>
+    <script>
+        // DOM Elements
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const startBtn = document.getElementById('startBtn');
+        const detectBtn = document.getElementById('detectBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const flipBtn = document.getElementById('flipBtn');
+        const loading = document.getElementById('loading');
+        const permissionHelp = document.getElementById('permissionHelp');
+        const peopleCount = document.getElementById('peopleCount');
+        const confidence = document.getElementById('confidence');
+        const processingSpeed = document.getElementById('processingSpeed');
+        const fpsDisplay = document.getElementById('fps');
+
+        // App State
+        let model;
+        let isDetecting = false;
+        let currentFacingMode = 'environment'; // 'user' for front camera
+        let stream = null;
+        let detectionInterval;
+        let frameCount = 0;
+        let lastFpsUpdate = Date.now();
+        let animationFrameId;
+        
+        // Performance metrics
+        let detectionTimes = [];
+        const maxDetectionSamples = 10;
+
+        // Initialize TensorFlow.js model
+        async function initModel() {
+            try {
+                loading.textContent = "Loading AI model...";
+                
+                // Load the COCO-SSD model (optimized for person detection)
+                model = await cocoSsd.load({
+                    base: 'mobilenet_v2',
+                });
+                
+                loading.textContent = "Model loaded successfully!";
+                setTimeout(() => {
+                    loading.style.display = 'none';
+                }, 1000);
+                
+                // Enable camera start button
+                startBtn.disabled = false;
+                
+            } catch (error) {
+                loading.textContent = `Error loading model: ${error.message}`;
+                console.error("Model loading error:", error);
+            }
+        }
+
+        // Start camera using getUserMedia API
+        async function startCamera() {
+            try {
+                loading.textContent = "Accessing camera...";
+                loading.style.display = 'block';
+                
+                // Stop any existing stream
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+                
+                // Configure camera constraints
+                const constraints = {
+                    video: {
+                        facingMode: currentFacingMode,
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        frameRate: { ideal: 30 }
+                    },
+                    audio: false
+                };
+                
+                // Request camera access
+                stream = await navigator.mediaDevices.getUserMedia(constraints)
+                    .catch(error => {
+                        permissionHelp.style.display = 'block';
+                        throw error;
+                    });
+                
+                permissionHelp.style.display = 'none';
+                video.srcObject = stream;
+                
+                // Wait for video to be ready
+                await new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        // Set canvas dimensions to match video
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        resolve();
+                    };
+                });
+                
+                loading.style.display = 'none';
+                startBtn.disabled = true;
+                detectBtn.disabled = false;
+                stopBtn.disabled = false;
+                
+            } catch (error) {
+                loading.textContent = `Camera error: ${error.message}`;
+                console.error("Camera access error:", error);
+            }
+        }
+
+        // Stop camera
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            
+            if (detectionInterval) {
+                clearInterval(detectionInterval);
+                detectionInterval = null;
+            }
+            
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
+            
+            isDetecting = false;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            startBtn.disabled = false;
+            detectBtn.disabled = true;
+            stopBtn.disabled = true;
+            
+            // Reset stats
+            peopleCount.textContent = "0";
+            confidence.textContent = "0%";
+        }
+
+        // Flip camera between front and back
+        async function flipCamera() {
+            currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+            
+            if (stream) {
+                const wasDetecting = isDetecting;
+                if (wasDetecting) {
+                    stopDetection();
+                }
+                
+                await startCamera();
+                
+                if (wasDetecting) {
+                    startDetection();
+                }
+            }
+        }
+
+        // Process detection results
+        function processDetections(predictions) {
+            // Clear previous drawings
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Filter only person detections (class 0 in COCO-SSD)
+            const people = predictions.filter(pred => pred.class === 'person');
+            
+            let totalConfidence = 0;
+            
+            // Draw bounding boxes and labels
+            people.forEach(person => {
+                const [x, y, width, height] = person.bbox;
+                const score = Math.round(person.score * 100);
+                
+                // Add to total confidence
+                totalConfidence += score;
+                
+                // Draw bounding box
+                ctx.strokeStyle = '#4285f4';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x, y, width, height);
+                
+                // Draw label background
+                ctx.fillStyle = '#4285f4';
+                const text = `Person ${score}%`;
+                const textWidth = ctx.measureText(text).width;
+                ctx.fillRect(x - 1, y - 22, textWidth + 10, 22);
+                
+                // Draw text
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '14px Arial';
+                ctx.fillText(text, x + 4, y - 6);
+            });
+            
+            // Update stats
+            peopleCount.textContent = people.length;
+            confidence.textContent = people.length > 0 
+                ? `${Math.round(totalConfidence / people.length)}%` 
+                : "0%";
+            
+            // Update FPS counter
+            frameCount++;
+            const now = Date.now();
+            const delta = now - lastFpsUpdate;
+            
+            if (delta >= 1000) {
+                fpsDisplay.textContent = Math.round((frameCount * 1000) / delta);
+                frameCount = 0;
+                lastFpsUpdate = now;
+            }
+        }
+
+        // Start detection
+        async function startDetection() {
+            if (isDetecting || !stream) return;
+            
+            isDetecting = true;
+            detectBtn.disabled = true;
+            detectBtn.textContent = "Detecting...";
+            
+            // Clear previous stats
+            detectionTimes = [];
+            
+            // Use requestAnimationFrame for smoother performance
+            function detectFrame() {
+                if (!isDetecting) return;
+                
+                const startTime = performance.now();
+                
+                model.detect(video).then(predictions => {
+                    // Calculate processing time
+                    const endTime = performance.now();
+                    const processTime = endTime - startTime;
+                    
+                    // Update processing speed (moving average)
+                    detectionTimes.push(processTime);
+                    if (detectionTimes.length > maxDetectionSamples) {
+                        detectionTimes.shift();
+                    }
+                    const avgTime = detectionTimes.reduce((a, b) => a + b, 0) / detectionTimes.length;
+                    processingSpeed.textContent = `${avgTime.toFixed(1)} ms`;
+                    
+                    // Process detections
+                    processDetections(predictions);
+                    
+                    // Continue detection
+                    animationFrameId = requestAnimationFrame(detectFrame);
+                }).catch(error => {
+                    console.error("Detection error:", error);
+                    animationFrameId = requestAnimationFrame(detectFrame);
+                });
+            }
+            
+            // Start detection loop
+            detectFrame();
+        }
+
+        // Stop detection
+        function stopDetection() {
+            isDetecting = false;
+            detectBtn.disabled = false;
+            detectBtn.textContent = "Start Detection";
+            
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Reset people count
+            peopleCount.textContent = "0";
+        }
+
+        // Event Listeners
+        startBtn.addEventListener('click', startCamera);
+        stopBtn.addEventListener('click', stopCamera);
+        detectBtn.addEventListener('click', startDetection);
+        flipBtn.addEventListener('click', flipCamera);
+
+        // Initialize the app
+        window.addEventListener('load', () => {
+            initModel();
+        });
+
+        // Clean up on page unload
+        window.addEventListener('beforeunload', () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+        });
+    </script>
+</body>
+</html>
